@@ -1,84 +1,83 @@
-import sys
-import asyncio
 import urllib.parse
-from pyppeteer import launch
+import os
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-# hjälpfunktion för att läsa adresser och namn från values.txt
-def read_file(filename):
-    with open(filename) as f:
-        lines = f.read().split('\n')
-        addresses = lines[::3]
-        names = lines[1::3]
-        products = lines[2::3]
-        return list(zip(addresses, names, products))
-
-# Hjälpfunktion för att undersköka om SKU samt priskombinationer redan finns i values.txt
-def sku_price_exists(sku, price, filename):
+# Funktion för att kontrollera om SKU och pris redan finns i values.txt
+def sku_price_exists(sku, price_text, filename):
     with open(filename, 'r') as f:
         for line in f:
-            if line.startswith(sku) and line.endswith(price + '\n'):
+            if sku in line and price_text in line:
                 return True
     return False
 
-# Hjällpfunktio för att skriva SKU och priskombination till values.txt
-def write_sku_price(sku, price, filename):
+# Funktion för att skriva SKU och pris till values.txt
+def write_sku_price(sku, price_text, filename):
+    # Öppna filen för läsning och skrivning
     with open(filename, 'r+') as f:
+        # Läs in alla rader i filen
         lines = f.readlines()
-        f.seek(0)
-        sku_found = False
+
+        # Sök efter en befintlig post med samma SKU
         for i, line in enumerate(lines):
-            if line.startswith(sku):
-                lines[i] = sku + '\t' + price + '\n'
-                sku_found = True
+            if sku in line:
+                # Om en match hittas, uppdatera priset för den befintliga posten
+                lines[i] = f'{sku}\t{price_text}\n'
                 break
-        if not sku_found:
-            lines.append(sku + '\t' + price + '\n')
+        else:
+            # Om ingen match hittas, lägg till en ny post för den nya SKU:en och priset
+            lines.append(f'{sku}\t{price_text}\n')
+
+        # Gå tillbaka till början av filen och skriv över alla rader med uppdaterade rader
+        f.seek(0)
         f.writelines(lines)
+        # Beskär eventuell överbliven text från tidigare version av filen
+        f.truncate()
+
+# Hitta sökvägen till skriptets katalog och filerna
+script_dir = os.path.dirname(os.path.realpath(__file__))
+pages_file = os.path.join(script_dir, 'pages.txt')
+values_file = os.path.join(script_dir, 'values.txt')
+
+# Läs in listan av sidor från filen pages.txt
+with open(pages_file, 'r') as f:
+    pages = [line.strip() for line in f]
+    pages = [page.split('\t') for page in pages]
 
 
+# Skapa instans av Chrome med Selenium-webdrivrutinerna
+chrome_options = Options()
+chrome_options.add_argument('--headless') # Kör utan grafiskt gränssnitt
 
-async def main():
-    # Läs listan över adresser och namn från pages.txt
-    pages = read_file('pages.txt')
+# Iterera över listan och samla in pris från alla sidor
+for address, sku, name in pages:
+    # Undersök om adressen är en giltig URL
+    parsed_url = urllib.parse.urlparse(address)
+    if not parsed_url.scheme or not parsed_url.netloc:
+        print(f'{address} is not a valid URL!')
+        continue
 
-    # Undersök om SKU finns specifierat som ett terminal-argument
-    product_name = ''
-    if len(sys.argv) > 1:
-        product_name = sys.argv[1]
+    # Starta en webdriver och öppna en ny sida
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.get(address)
 
-    # Iterera över listan och samla in pris från alla sidor
-    for address, name, product in pages:
-        # Undersök om SKU är specifierat och matcha det med det jag specifierat som terminalkommando
-        if product_name and product.lower() != product_name.lower():
-            continue
+    # Hitta elementet som innehåller pris
+    price_element = WebDriverWait(driver, 3).until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, 'p.sc-iqsfdx.cuTrvl.sc-jUotMc.gQYeO'))
+    )
+    # hämta pristexten från elementet
+    price_text = price_element.text.strip()
 
-        # Undersök om adressen är en giltig URL
-        parsed_url = urllib.parse.urlparse(address)
-        if not parsed_url.scheme or not parsed_url.netloc:
-            print(f'{address} is not a valid URL!')
-            continue
+    # stäng webbläsaren
+    driver.quit()
 
-        # Starta en huvudlös browser och öppna en ny sidda
-        browser = await launch(headless=True)
-        page = await browser.newPage()
+    # Skriv SKU och pris till values.txt om det inte redan finns
+    if not sku_price_exists(sku, price_text, values_file):
+        write_sku_price(sku, price_text, values_file)
 
-        # Navigera till sida och vänta på att den ska laddas
-        await page.goto(address)
-
-        # Hitta elementet som innehåller pris
-        price_element = await page.xpath("//p[contains(@class, 'sc-iqsfdx')]")
-        if len(price_element) > 0:
-            price = await price_element[0].getProperty('textContent')
-            price_text = await price.jsonValue()
-
-            # Skriv SKU och pris till values.txt om det inte redan finns
-            sku = product.split()[0]
-            if not sku_price_exists(sku, price_text, 'values.txt'):
-                write_sku_price(sku, price_text, 'values.txt')
-
-            # Printa ut produkt och pris och stäng ned browser
-            print(name)
-            print(price_text)
-        await browser.close()
-
-asyncio.get_event_loop().run_until_complete(main())
+    # Printa ut produkt och pris
+    print(name)
+    print(price_text)
